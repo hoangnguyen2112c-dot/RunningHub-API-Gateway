@@ -16,6 +16,7 @@ RUNNINGHUB_API_KEY = os.environ.get("RUNNINGHUB_API_KEY")
 USER_DB_URL = os.environ.get("USER_DB_URL")
 
 # 3. Cấu hình Workflow ID bí mật
+# ĐÃ SỬA: Bỏ "Vip (24G)"
 PRESET_CONFIGS = {
     "Normal (24G)": {
         "id": "1984294242724036609", 
@@ -24,13 +25,7 @@ PRESET_CONFIGS = {
         "strength_id": "134", 
         "show_strength": True
     },
-    "Vip (24G)": {
-        "id": "1989957298149838849", 
-        "prompt_id": "416", 
-        "image_id": "284", 
-        "strength_id": "134", 
-        "show_strength": True
-    },
+    # "Vip (24G)" đã bị loại bỏ theo yêu cầu
     "Upscale (24G)": {
         "id": "1981382064639492097", 
         "prompt_id": "45", 
@@ -76,7 +71,12 @@ class LoginRequest(BaseModel):
 class CreateTaskRequest(BaseModel):
     username: str
     password: str
-    preset_name: str
+    # ĐÃ SỬA: Thay preset_name bằng các ID để tự thêm ID workflow khác
+    workflow_id: str  # ID chính của workflow
+    prompt_id: str  # ID node cho Prompt
+    image_id: str  # ID node cho Ảnh Input
+    strength_id: Optional[str] = None  # ID node cho Strength (nếu có)
+    
     gpu_mode: str
     prompt_text: str
     img_path: str
@@ -126,54 +126,51 @@ async def login_endpoint(req: LoginRequest):
 
 @app.post("/api/v1/workflow/create")
 async def create_task(req: CreateTaskRequest):
-    """API Tạo Task (Có trừ tiền)"""
+    """API Tạo Task (Có trừ tiền) - ĐÃ SỬA để dùng ID Workflow trực tiếp và loại bỏ máy Plus"""
     
     # BƯỚC 1: Kiểm tra đăng nhập & Số dư TRƯỚC khi chạy
     await check_and_deduct(req.username, req.password, "login")
 
-    # BƯỚC 2: Lấy thông tin Preset (Bảo mật ID)
-    preset = PRESET_CONFIGS.get(req.preset_name)
-    if not preset:
-        raise HTTPException(400, "Chế độ (Preset) không hợp lệ.")
-    
-    # BƯỚC 3: Xây dựng Node Info (Mapping tham số vào đúng Node ID)
+    # BƯỚC 2: Xây dựng Node Info (Mapping tham số vào đúng Node ID)
     node_info = []
     
     # Prompt (Text)
-    if req.prompt_text and preset["prompt_id"]:
+    # Dùng req.prompt_id thay vì preset["prompt_id"]
+    if req.prompt_text and req.prompt_id:
         node_info.append({
-            "nodeId": preset["prompt_id"], 
+            "nodeId": req.prompt_id, 
             "fieldName": "text", 
             "fieldValue": req.prompt_text
         })
         
     # Strength (Nếu có)
-    if req.strength is not None and preset["strength_id"]:
+    # Dùng req.strength_id thay vì preset["strength_id"]
+    if req.strength is not None and req.strength_id:
         node_info.append({
-            "nodeId": preset["strength_id"], 
+            "nodeId": req.strength_id, 
             "fieldName": "guidance", 
             "fieldValue": req.strength
         })
         
     # Ảnh Input (Đã upload)
-    if req.img_path and preset["image_id"]:
+    # Dùng req.image_id thay vì preset["image_id"]
+    if req.img_path and req.image_id:
         node_info.append({
-            "nodeId": preset["image_id"], 
+            "nodeId": req.image_id, 
             "fieldName": "image", 
             "fieldValue": req.img_path
         })
 
     payload = {
-        "workflowId": preset["id"],
+        "workflowId": req.workflow_id, # Dùng ID Workflow trực tiếp
         "nodeInfoList": node_info
     }
 
     # Xử lý chọn máy (GPU Mode)
-    if req.gpu_mode == "Plus (48G)":
-        payload["gpuType"] = "plus" # Flag kích hoạt máy mạnh
-        payload["taskType"] = "plus"
+    # ĐÃ BỎ LOGIC chọn máy "Plus (48G)"
+    # Nếu muốn giữ lại chế độ máy tiêu chuẩn, không cần thay đổi gì thêm
     
-    # BƯỚC 4: Gọi RunningHub (Dùng Key Admin của BẠN)
+    # BƯỚC 3: Gọi RunningHub (Dùng Key Admin của BẠN)
     if not RUNNINGHUB_API_KEY:
         raise HTTPException(500, "Server chưa có API Key RunningHub.")
 
@@ -187,7 +184,7 @@ async def create_task(req: CreateTaskRequest):
         if rh_data.get("code") != 0:
             raise Exception(rh_data.get("msg"))
         
-        # BƯỚC 5: Chạy thành công -> Gọi Google Sheet để TRỪ TIỀN
+        # BƯỚC 4: Chạy thành công -> Gọi Google Sheet để TRỪ TIỀN
         await check_and_deduct(req.username, req.password, "deduct")
         
         # Trả về Task ID cho khách
