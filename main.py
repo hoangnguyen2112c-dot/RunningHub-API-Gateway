@@ -1,6 +1,6 @@
 import os
 import httpx
-from fastapi import FastAPI, HTTPException, Body, UploadFile, File, Form, Header
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -15,8 +15,7 @@ RUNNINGHUB_API_KEY = os.environ.get("RUNNINGHUB_API_KEY")
 # 2. Link Google Apps Script (Database quản lý User)
 USER_DB_URL = os.environ.get("USER_DB_URL")
 
-# 3. Cấu hình Workflow ID bí mật
-# ĐÃ SỬA: Bỏ "Vip (24G)"
+# 3. Cấu hình Workflow ID bí mật (CHỈ DÙNG ĐỂ THAM KHẢO, LOGIC TẠO TASK MỚI KHÔNG DÙNG PRESET_CONFIGS)
 PRESET_CONFIGS = {
     "Normal (24G)": {
         "id": "1984294242724036609", 
@@ -47,10 +46,8 @@ RUNNINGHUB_URLS = {
 #              KHỞI TẠO APP
 # ==========================================
 
-# --- QUAN TRỌNG: app phải được khởi tạo ở đây trước khi dùng @app ---
 app = FastAPI()
 
-# Cấu hình CORS để Web App/Exe gọi được
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -68,10 +65,10 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+# ĐÃ SỬA: Thay preset_name bằng các ID để tự thêm ID workflow khác
 class CreateTaskRequest(BaseModel):
     username: str
     password: str
-    # ĐÃ SỬA: Thay preset_name bằng các ID để tự thêm ID workflow khác
     workflow_id: str  # ID chính của workflow
     prompt_id: str  # ID node cho Prompt
     image_id: str  # ID node cho Ảnh Input
@@ -122,20 +119,20 @@ async def check_and_deduct(username, password, action="login"):
 @app.post("/api/v1/login")
 async def login_endpoint(req: LoginRequest):
     """API Đăng nhập & Kiểm tra số dư"""
+    # Trả về data (có credits) nếu thành công
     return await check_and_deduct(req.username, req.password, "login")
 
 @app.post("/api/v1/workflow/create")
 async def create_task(req: CreateTaskRequest):
-    """API Tạo Task (Có trừ tiền) - ĐÃ SỬA để dùng ID Workflow trực tiếp và loại bỏ máy Plus"""
+    """API Tạo Task (Có trừ tiền) - Đã sửa để dùng ID Workflow trực tiếp và loại bỏ máy Plus"""
     
-    # BƯỚC 1: Kiểm tra đăng nhập & Số dư TRƯỚC khi chạy
+    # BƯỚC 1: Kiểm tra đăng nhập & Số dư TRƯỚC khi chạy (Sẽ chặn nếu credits <= 0)
     await check_and_deduct(req.username, req.password, "login")
 
     # BƯỚC 2: Xây dựng Node Info (Mapping tham số vào đúng Node ID)
     node_info = []
     
     # Prompt (Text)
-    # Dùng req.prompt_id thay vì preset["prompt_id"]
     if req.prompt_text and req.prompt_id:
         node_info.append({
             "nodeId": req.prompt_id, 
@@ -144,7 +141,6 @@ async def create_task(req: CreateTaskRequest):
         })
         
     # Strength (Nếu có)
-    # Dùng req.strength_id thay vì preset["strength_id"]
     if req.strength is not None and req.strength_id:
         node_info.append({
             "nodeId": req.strength_id, 
@@ -153,7 +149,6 @@ async def create_task(req: CreateTaskRequest):
         })
         
     # Ảnh Input (Đã upload)
-    # Dùng req.image_id thay vì preset["image_id"]
     if req.img_path and req.image_id:
         node_info.append({
             "nodeId": req.image_id, 
@@ -168,7 +163,6 @@ async def create_task(req: CreateTaskRequest):
 
     # Xử lý chọn máy (GPU Mode)
     # ĐÃ BỎ LOGIC chọn máy "Plus (48G)"
-    # Nếu muốn giữ lại chế độ máy tiêu chuẩn, không cần thay đổi gì thêm
     
     # BƯỚC 3: Gọi RunningHub (Dùng Key Admin của BẠN)
     if not RUNNINGHUB_API_KEY:
@@ -193,7 +187,8 @@ async def create_task(req: CreateTaskRequest):
     except Exception as e:
         raise HTTPException(500, f"Lỗi RunningHub: {str(e)}")
 
-# --- ĐÂY LÀ HÀM UPLOAD ĐÃ SỬA (Dùng UploadFile) ---
+# --- API UPLOAD ---
+from fastapi import UploadFile, File
 @app.post("/api/v1/upload")
 async def upload_file(file: UploadFile = File(...)):
     """
@@ -203,17 +198,12 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(500, "Server chưa có API Key.")
         
     try:
-        # 1. Đọc nội dung file từ client gửi lên
         file_content = await file.read()
-        
-        # 2. Lấy tên file tự động từ object UploadFile
         filename = file.filename
         
-        # 3. Tạo form-data để đẩy sang RunningHub
         files = {'file': (filename, file_content, file.content_type or 'image/png')} 
         data = {'apiKey': RUNNINGHUB_API_KEY, 'fileType': 'image'}
         
-        # 4. Gửi sang RunningHub
         res = await client.post(RUNNINGHUB_URLS["upload"], files=files, data=data)
         res_data = res.json()
         
